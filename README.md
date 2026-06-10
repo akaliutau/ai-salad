@@ -7,9 +7,12 @@
   <img alt="Data" src="https://img.shields.io/badge/data-validated--attempts-green">
 </p>
 
-**AI-Salad** is a browser-native agent system for solving coding problems, improving solutions through sequential submissions, extracting reusable solving heuristics, and automatically building high-quality fine-tuning datasets — without human labeling.
+**AI-Salad** is a browser-native agent system for solving coding problems, improving solutions through sequential submissions, 
+extracting reusable solving heuristics, and automatically building high-quality fine-tuning datasets — without human labeling.
 
-The project starts with LeetCode-style problems, but the bigger goal is broader: create a closed-loop environment where coding agents learn from real feedback, search toward optimal solutions, and turn every validated attempt into durable training data.
+The project starts with LeetCode-style problems, but the bigger goal is broader: 
+create a closed-loop environment where coding agents learn from real feedback, search toward optimal solutions, 
+and turn every validated attempt into durable training data.
 
 ---
 
@@ -21,7 +24,8 @@ Most coding-agent systems stop after one generation:
 problem → model → solution → pass/fail
 ```
 
-AI-Salad treats solving as an optimization process — a salad of agents, feedback, traces, heuristics, and validated data:
+AI-Salad treats solving as an optimization process — a mixture of runs, coding environment feedback (essentially it could be any platform, 
+even if it does not have API), traces, heuristics, and validated data:
 
 ```text
 problem
@@ -35,19 +39,19 @@ problem
   → store dataset row
 ```
 
-Each submission becomes a gradient signal.
+Each submission becomes a gradient signal, that can be thought as a practical optimization gradient: 
+acceptance, failing tests, runtime, memory, edge cases, code shape, and reasoning quality all point the system toward better solutions.
 
-Not a mathematical gradient from backpropagation, but a practical optimization gradient: acceptance, failing tests, runtime, memory, edge cases, code shape, and reasoning quality all point the system toward better solutions.
-
-The final output is not just an accepted answer. It is a structured, validated example that can be used to train stronger models.
+The final output is a structured, validated example that can be used to train stronger models. Since the agent has the access to comment sections
+at coding competition platforms, as well as solutions submitted by other users, it results in exceptionally high quality of solutions and hence in
+high density of training data, which becomes a much better input than unstructured data collected via web scraping.
 
 ---
 
 ## Why Browser Access?
 
-Browser access is a core design choice, not a convenience.
-
-Coding platforms are not just APIs. The browser contains the real task environment:
+Browser access is a core design choice, because most coding platforms usually do not provide APIs. 
+In that sense the browser contains the real task environment. For example, in case of LeetCode this is:
 
 - the exact problem statement shown to the user;
 - the current editor signature and language stub;
@@ -56,17 +60,19 @@ Coding platforms are not just APIs. The browser contains the real task environme
 - visible runtime, memory, and status feedback;
 - real-world UI changes, delays, and failure modes.
 
-Using Playwright gives the agent the same interface a human solver uses. That matters because the goal is to collect trustworthy execution-grounded data, not synthetic examples detached from the actual platform.
+Using Playwright gives the agent the same interface a human solver uses. 
+That matters because the goal is to collect trustworthy execution-grounded data, not synthetic examples detached from the actual platform.
 
-Browser access also keeps the system general. The same architecture can later work across other coding sites, interview platforms, internal benchmark tools, or custom web-based evaluation environments.
+Browser access also keeps the system general. The same architecture can later work across other coding sites, 
+interview platforms, internal benchmark tools, or custom web-based evaluation environments.
 
-The browser is the agent’s laboratory.
+The browser is the agent’s laboratory in our product.
 
 ---
 
 ## Why We Need Many Solutions
 
-A single accepted solution is useful. A sequence of attempts is far more valuable.
+A single accepted solution is useful, but a sequence of attempts is far more valuable.
 
 For each problem, AI-Salad should eventually generate and evaluate many candidates:
 
@@ -79,7 +85,8 @@ For each problem, AI-Salad should eventually generate and evaluate many candidat
 - heuristic-guided attempts;
 - edge-case-focused rewrites.
 
-Sequential submissions create an empirical search process. The system can compare attempts using correctness first, then runtime, memory, simplicity, robustness, and explanation quality.
+Sequential submissions create an empirical search process. 
+The system can compare attempts using correctness first, then runtime, memory, simplicity, robustness, and explanation quality.
 
 This allows the project to move from:
 
@@ -162,7 +169,8 @@ filter + rank + dedupe + export
 
 The browser automation runner.
 
-It opens the problem page, extracts the problem and editor signature, injects code into Monaco, submits the solution, waits for results, and writes the final JSON output.
+It opens the problem page, extracts the problem and editor signature, injects code into Monaco, submits the solution, 
+waits for results, and writes the final JSON output.
 
 ### `leetcode_llm_gemini.py`
 
@@ -173,27 +181,25 @@ It runs a two-step LLM pipeline:
 1. Generate final submission code only.
 2. Generate a compact audit record with rationale, complexity, edge cases, confidence, and possible failure modes.
 
-The rationale is intentionally high-level and dataset-safe. It is not hidden chain-of-thought.
-
 ### `result_pack_store.py`
 
 The evidence and persistence layer.
 
-It builds solution packs, extracts key metrics, computes a correctness-first score, stores packs in MongoDB, and supports querying previous attempts by problem.
+It builds solution packs, extracts key metrics, computes a correctness-first score, stores packs in MongoDB, 
+and supports querying previous attempts by problem.
 
 ### `cloud_run_job.py`
 
 The production entrypoint.
 
-It lets the system run as a Cloud Run Job where the only execution-time argument is the problem URL. All fixed behavior comes from environment variables and secrets.
+It lets the system run as a Cloud Run Job where the only execution-time argument is the problem URL. 
+All fixed behavior comes from environment variables and secrets.
 
 ---
 
 ## Result Packs
 
-Every serious attempt should become a result pack.
-
-A result pack contains:
+Every serious attempt should become a result pack containing:
 
 ```text
 problem_id
@@ -252,7 +258,6 @@ accepted > partial pass rate > runtime > memory > simplicity
 
 Over time, this creates an automatic search process over solution space.
 
-The agent is not merely answering. It is climbing.
 
 ---
 
@@ -324,11 +329,17 @@ The dataset is not built from model guesses. It is built from validated attempts
 
 ## Local Quick Start
 
-Install dependencies:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/akaliutau/ai-salad
+cd ai-salad
+```
+
+3. **Create and activate a Conda environment**
+
+```bash
+conda create -n ai-salad python=3.12 -y
+conda activate ai-salad
 pip install -r requirements.txt
 python -m playwright install chromium
 ```
