@@ -1,100 +1,345 @@
-# LeetCode Playwright submitter prototype — Python
 
-This is a Python version of the LeetCode Playwright prototype.
+# 🥗 AI-Salad: Autonomous Dataset Factory
 
-It:
+<p align="left">
+  <img alt="Status" src="https://img.shields.io/badge/status-prototype-orange">
+  <img alt="Agents" src="https://img.shields.io/badge/agents-browser--native-blue">
+  <img alt="Data" src="https://img.shields.io/badge/data-validated--attempts-green">
+</p>
 
-1. Opens a LeetCode problem URL.
-2. Scrapes the problem statement from `__NEXT_DATA__`, falling back to `<meta name="description">`.
-3. Scrapes the current Monaco editor signature/stub.
-4. Reads solution code from `sol.txt` or a custom `--solution` path.
-5. Inserts the solution into the Monaco editor.
-6. Clicks Submit unless `--dry-run` is set.
-7. Polls LeetCode's submission check endpoint and saves Runtime/Memory/status metrics.
+**AI-Salad** is a browser-native agent system for solving coding problems, improving solutions through sequential submissions, extracting reusable solving heuristics, and automatically building high-quality fine-tuning datasets — without human labeling.
 
-## Install
+The project starts with LeetCode-style problems, but the bigger goal is broader: create a closed-loop environment where coding agents learn from real feedback, search toward optimal solutions, and turn every validated attempt into durable training data.
+
+---
+
+## The Idea
+
+Most coding-agent systems stop after one generation:
+
+```text
+problem → model → solution → pass/fail
+```
+
+AI-Salad treats solving as an optimization process — a salad of agents, feedback, traces, heuristics, and validated data:
+
+```text
+problem
+  → generate candidate
+  → submit in browser
+  → observe real feedback
+  → improve solution
+  → resubmit
+  → rank attempts
+  → extract heuristic
+  → store dataset row
+```
+
+Each submission becomes a gradient signal.
+
+Not a mathematical gradient from backpropagation, but a practical optimization gradient: acceptance, failing tests, runtime, memory, edge cases, code shape, and reasoning quality all point the system toward better solutions.
+
+The final output is not just an accepted answer. It is a structured, validated example that can be used to train stronger models.
+
+---
+
+## Why Browser Access?
+
+Browser access is a core design choice, not a convenience.
+
+Coding platforms are not just APIs. The browser contains the real task environment:
+
+- the exact problem statement shown to the user;
+- the current editor signature and language stub;
+- authenticated access state;
+- platform-specific submission behavior;
+- visible runtime, memory, and status feedback;
+- real-world UI changes, delays, and failure modes.
+
+Using Playwright gives the agent the same interface a human solver uses. That matters because the goal is to collect trustworthy execution-grounded data, not synthetic examples detached from the actual platform.
+
+Browser access also keeps the system general. The same architecture can later work across other coding sites, interview platforms, internal benchmark tools, or custom web-based evaluation environments.
+
+The browser is the agent’s laboratory.
+
+---
+
+## Why We Need Many Solutions
+
+A single accepted solution is useful. A sequence of attempts is far more valuable.
+
+For each problem, AI-Salad should eventually generate and evaluate many candidates:
+
+- simple baseline solutions;
+- optimized solutions;
+- alternative algorithms;
+- memory-saving variants;
+- language-specific idioms;
+- repaired versions after failures;
+- heuristic-guided attempts;
+- edge-case-focused rewrites.
+
+Sequential submissions create an empirical search process. The system can compare attempts using correctness first, then runtime, memory, simplicity, robustness, and explanation quality.
+
+This allows the project to move from:
+
+```text
+Can the model solve the problem?
+```
+
+to:
+
+```text
+Can the agent discover the best solution family, explain why it works, and preserve the evidence as training data?
+```
+
+That is the central loop.
+
+---
+
+## What the System Does Today
+
+The current prototype already implements the foundation:
+
+1. Opens a coding problem in a real browser.
+2. Scrapes the problem statement.
+3. Scrapes the editor signature or stub.
+4. Builds a stable problem input.
+5. Uses Gemini to generate direct submission code.
+6. Sanitizes the model output.
+7. Injects the code into the editor.
+8. Submits the solution, unless running in dry-run mode.
+9. Polls or reads submission feedback.
+10. Stores runtime, memory, status, and pass-rate signals.
+11. Writes a structured run folder.
+12. Optionally stores a result pack in MongoDB.
+13. Optionally runs as a Google Cloud Run Job.
+14. Optionally records traces through Overmind.
+
+This is enough to start collecting validated solution attempts.
+
+---
+
+## Architecture
+
+```text
+Coding Platform
+    │
+    ▼
+Browser Agent
+Playwright scraper + submitter
+    │
+    ▼
+Stable Problem Input
+problem text + signature + language + hash
+    │
+    ▼
+Solver Agent
+Gemini today, multi-agent search later
+    │
+    ▼
+Solution Sanitizer
+code-only extraction for direct submission
+    │
+    ▼
+Submission Loop
+browser injection + platform feedback
+    │
+    ▼
+Result Pack
+problem + code + metrics + score + rationale
+    │
+    ▼
+Dataset Factory
+filter + rank + dedupe + export
+```
+
+---
+
+## Core Components
+
+### `leetcode_submitter.py`
+
+The browser automation runner.
+
+It opens the problem page, extracts the problem and editor signature, injects code into Monaco, submits the solution, waits for results, and writes the final JSON output.
+
+### `leetcode_llm_gemini.py`
+
+The current solver module.
+
+It runs a two-step LLM pipeline:
+
+1. Generate final submission code only.
+2. Generate a compact audit record with rationale, complexity, edge cases, confidence, and possible failure modes.
+
+The rationale is intentionally high-level and dataset-safe. It is not hidden chain-of-thought.
+
+### `result_pack_store.py`
+
+The evidence and persistence layer.
+
+It builds solution packs, extracts key metrics, computes a correctness-first score, stores packs in MongoDB, and supports querying previous attempts by problem.
+
+### `cloud_run_job.py`
+
+The production entrypoint.
+
+It lets the system run as a Cloud Run Job where the only execution-time argument is the problem URL. All fixed behavior comes from environment variables and secrets.
+
+---
+
+## Result Packs
+
+Every serious attempt should become a result pack.
+
+A result pack contains:
+
+```text
+problem_id
+problem statement
+editor signature
+language
+generated solution
+solution hash
+submission status
+accepted flag
+runtime
+memory
+pass rate
+score
+rationale
+edge cases
+model configuration
+trace metadata
+run directory
+```
+
+This is the atomic unit of the project.
+
+Result packs are used for:
+
+- ranking solutions;
+- comparing attempts;
+- detecting duplicates;
+- mining heuristics;
+- debugging failures;
+- creating fine-tuning examples;
+- building evaluation sets.
+
+---
+
+## The Optimization Loop
+
+AI-Salad is designed around sequential improvement.
+
+```text
+Attempt 1: generate obvious solution
+Attempt 2: repair correctness bug
+Attempt 3: reduce complexity
+Attempt 4: optimize memory
+Attempt 5: simplify code
+Attempt 6: validate edge cases
+```
+
+Each attempt produces feedback.
+
+The system can score attempts with a correctness-first policy:
+
+```text
+accepted > partial pass rate > runtime > memory > simplicity
+```
+
+Over time, this creates an automatic search process over solution space.
+
+The agent is not merely answering. It is climbing.
+
+---
+
+## Heuristics
+
+Accepted solutions are not only examples. They are evidence for reusable strategies.
+
+From successful runs, the system can extract heuristics such as:
+
+```text
+Use a hash map when the problem asks for complements or previously seen values.
+Use two pointers when constraints involve sorted arrays or shrinking windows.
+Use a monotonic stack when each element needs the next greater or smaller element.
+Use BFS when the task asks for shortest path in an unweighted state graph.
+Use dynamic programming when the optimal answer depends on overlapping subproblems.
+```
+
+These heuristics can later be used to guide new agents before code generation.
+
+The project therefore creates a flywheel:
+
+```text
+solutions → heuristics → better solutions → better datasets → better models
+```
+
+---
+
+## Autonomous Dataset Creation
+
+The end goal is a dataset pipeline that does not require human labeling.
+
+A high-quality training row should be created only when the system has evidence:
+
+- the problem input is stable;
+- the editor signature is known;
+- the code was actually submitted or validated;
+- the solution passed or has measurable feedback;
+- runtime and memory are recorded;
+- the solution is deduplicated;
+- the rationale and edge cases are clean;
+- the example is traceable back to a result pack.
+
+A future dataset row can look like this:
+
+```json
+{
+  "id": "two-sum:python3:abc123",
+  "input": {
+    "problem": "...",
+    "signature": "class Solution: ..."
+  },
+  "output": {
+    "code": "class Solution: ...",
+    "rationale": "Use a hash map to store previously seen values..."
+  },
+  "metadata": {
+    "accepted": true,
+    "runtime_ms": 52,
+    "memory_mb": 17.8,
+    "heuristics": ["hash-map-complement"],
+    "source_pack_id": "abc123"
+  }
+}
+```
+
+The dataset is not built from model guesses. It is built from validated attempts.
+
+---
+
+## Local Quick Start
+
+Install dependencies:
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-## Login once
+Log in once:
 
 ```bash
 python login.py lc-auth.json
 ```
 
-A browser opens. Log in manually, then press Enter in the terminal. This writes cookies/local storage to `lc-auth.json`.
-
-Keep this file private. It contains authenticated browser state.
-
-## Submit
-
-```bash
-python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/' \
-  --solution sol.txt \
-  --auth lc-auth.json \
-  --lang python3
-```
-
-Outputs by default:
-
-- `problem.txt` — scraped problem text
-- `signature.txt` — scraped editor stub/signature
-- `leetcode-result.json` — final JSON including status/runtime/memory
-
-The terminal now prints a compact summary by default (`problem_id`, status, runtime, memory, score, pack id, run folder, MongoDB status). The full JSON is still saved to `--out`; pass `--verbose-result` if you want the old full stdout dump.
-
-## Scrape/inject without submitting
-
-```bash
-python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/' \
-  --solution sol.txt \
-  --auth lc-auth.json \
-  --lang python3 \
-  --dry-run
-```
-
-## Useful options
-
-```text
---headless             Run browser headless
---slow-mo 250          Slow browser operations for debugging
---timeout-ms 180000    Increase result polling timeout
---out result.json      Change result JSON path
---problem-out p.txt    Change problem dump path
---signature-out s.txt  Change signature dump path
-```
-
-## Notes
-
-- This does not bypass login, CAPTCHA, premium restrictions, rate limits, or other access controls.
-- Keep `--headless` off while developing selectors.
-- Make sure the LeetCode language in the UI matches `sol.txt`; `--lang` only helps pick a stub from page data, it does not reliably change the UI language dropdown.
-- LeetCode's React/Monaco DOM can change. The script avoids brittle CSS classes where possible, but this remains a prototype.
-
-## Optional Gemini solution-generation add-on
-
-The Gemini code is intentionally isolated in `leetcode_llm_gemini.py`. The browser submitter still works with `sol.txt`; add `--llm` to generate a solution from the scraped problem and editor signature before injection/submission.
-
-Local env setup, Vertex AI mode:
-
-```bash
-cp .env.example .env
-# edit GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION as needed
-```
-
-API-key mode for local experiments:
-
-```bash
-export GOOGLE_GENAI_USE_VERTEXAI=False
-export GEMINI_API_KEY='...'
-```
-
-Generate with Gemini, inject, and submit:
+Run with Gemini:
 
 ```bash
 python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/' \
@@ -103,7 +348,7 @@ python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/' \
   --llm
 ```
 
-Generate with Gemini, inject, but do not submit:
+Run without submitting:
 
 ```bash
 python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/' \
@@ -113,62 +358,28 @@ python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/' \
   --dry-run
 ```
 
-The LLM run folder is auto-created under `runs/` by default:
+---
 
-```text
-runs/<timestamp>_<problem-slug>/
-  input/stable_problem_input.json
-  input/problem.txt
-  input/signature.txt
-  prompts/01_generate_code_only.txt
-  prompts/02_rationale_and_reasoning_summary.txt
-  llm/01_raw_code_response.txt
-  llm/01_solution_sanitized.py
-  llm/01_solution_sanitized.txt
-  llm/02_raw_rationale_response.json
-  llm/02_rationale.json
-  llm_debug.jsonl
-  run_summary.json
-  result/leetcode-result.json
-```
+## Environment
 
-The first Gemini call is prompted to return direct code only. The second call returns a concise rationale/debug summary, complexity, edge cases, confidence, and possible failure modes. It intentionally asks for a high-level reasoning summary rather than hidden chain-of-thought.
-
-Useful flags:
-
-```text
---llm-model gemini-2.5-flash
---llm-rationale-model gemini-2.5-flash
---llm-temperature 0.2
---run-root /tmp/leetcode-runs
---run-dir /tmp/leetcode-runs/manual-test
---llm-project your-gcp-project
---llm-location global
-```
-
-## Optional result packs, Overmind traces, and MongoDB
-
-Install the optional packages when you want tracing and MongoDB persistence:
+For Vertex AI Gemini:
 
 ```bash
-pip install overmind 'pymongo[srv]'
+export GOOGLE_GENAI_USE_VERTEXAI=True
+export GOOGLE_CLOUD_PROJECT='your-project-id'
+export GOOGLE_CLOUD_LOCATION='global'
+export LEETCODE_CODE_MODEL='gemini-2.5-flash'
+export LEETCODE_RATIONALE_MODEL='gemini-2.5-flash'
 ```
 
-If you build a Cloud Run image from a Dockerfile that only installs `requirements.txt`, either add these two packages to `requirements.txt` or add this line to the Dockerfile after the main install step:
-
-```dockerfile
-RUN pip install --no-cache-dir -r requirements.additions.txt
-```
-
-Overmind tracing is optional and is initialized before Gemini calls when `OVERMIND_API_KEY` is present, or when `OVERMIND_ENABLED=true`. The SDK auto-instruments Google Gemini calls and this code adds a small custom span around each LLM operation with LeetCode tags.
+For Gemini API-key mode:
 
 ```bash
-export OVERMIND_API_KEY='ovr_...'
-export OVERMIND_SERVICE_NAME='leetcode-solver'
-export OVERMIND_ENVIRONMENT='production'
+export GOOGLE_GENAI_USE_VERTEXAI=False
+export GEMINI_API_KEY='...'
 ```
 
-MongoDB persistence is optional and is enabled only when `MONGODB_URI` is set. The Cloud Run deploy script stores the URI in Secret Manager and exposes it to the job as the `MONGODB_URI` environment variable.
+For MongoDB result packs:
 
 ```bash
 export MONGODB_URI='mongodb+srv://...'
@@ -176,214 +387,133 @@ export MONGODB_DB='leetcode_solver'
 export MONGODB_COLLECTION='solution_packs'
 ```
 
-Each run writes a solution pack with:
-
-- `problem_id`: the suffix from the URL, for example `two-sum` from `/problems/two-sum/`
-- `problem`: title, IDs, source, and statement text
-- `solution`: language, code, path, and SHA-256
-- `metrics`: status, runtime, memory, test counts, pass rate
-- `score`: correctness-first score, then runtime and memory
-- `trace`: Overmind metadata when tracing is enabled
-
-Local connectivity check:
+For tracing:
 
 ```bash
-export MONGODB_URI='mongodb+srv://USER:PASSWORD@HOST/leetcode_solver?retryWrites=true&w=majority'
-python result_pack_store.py --ping
+export OVERMIND_API_KEY='...'
+export OVERMIND_SERVICE_NAME='ai-salad'
+export OVERMIND_ENVIRONMENT='production'
 ```
 
-Query all packs for one problem, highest score first:
+---
 
-```bash
-python result_pack_store.py two-sum --limit 20
-```
+## Cloud Run
 
-The structured run folder also gets `result/solution-pack.json` when `--llm` is used.
-
-## MongoDB Atlas on GCP for real Cloud Run testing
-
-Recommended test setup: use MongoDB Atlas deployed on GCP, then inject the connection string into the Cloud Run Job from Google Secret Manager. This avoids hard-coding database credentials in the job definition.
-
-### Option A: create Atlas manually in the UI
-
-1. Create or open a MongoDB Atlas project.
-2. Create a free/shared cluster. Choose **Google Cloud** as the provider and choose a region close to your Cloud Run region.
-3. Create a database user, for example `leetcode_solver`, with a generated password.
-4. Configure Network Access.
-   - Fast smoke test: allow access from anywhere (`0.0.0.0/0`) temporarily.
-   - Safer setup: use a static Cloud Run egress IP through Serverless VPC Access + Cloud NAT, then allowlist only that NAT IP.
-   - Production setup: use Atlas private networking/private endpoint where available for your cluster tier and region.
-5. Copy the driver connection string and replace placeholders with the database user and password.
-6. Use database name `leetcode_solver` in the URI path.
-
-
-Example final URI shape:
-
-```text
-mongodb+srv://leetcode_solver:<password>@<cluster-host>/leetcode_solver?retryWrites=true&w=majority
-```
-
-Then place it in `.env` before running `deploy_leetcode_job.sh`:
-
-```bash
-MONGODB_URI='mongodb+srv://leetcode_solver:...@.../leetcode_solver?retryWrites=true&w=majority'
-MONGODB_DB=leetcode_solver
-MONGODB_COLLECTION=solution_packs
-```
-
-### Option B: create Atlas with the Atlas CLI
-
-Install and authenticate the MongoDB Atlas CLI first:
-
-```bash
-sudo apt-get install gnupg curl
-curl -fsSL https://pgp.mongodb.com/server-7.0.asc | \
-   sudo gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg \
-   --dearmor
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-sudo apt-get update
-sudo apt-get install -y mongodb-atlas
-
-atlas auth login
-atlas --version
-```
-
-A minimal free-tier GCP cluster can be created with `atlas setup`. This creates/configures the cluster and database user in one flow:
-
-```bash
-export ATLAS_CLUSTER_NAME=leetcode-solver
-export ATLAS_DB_USERNAME=leetcode_solver
-export ATLAS_DB_PASSWORD='replace-with-strong-password'
-
-atlas setup \
-  --clusterName "$ATLAS_CLUSTER_NAME" \
-  --provider GCP \
-  --region CENTRAL_US \
-  --tier M0 \
-  --username "$ATLAS_DB_USERNAME" \
-  --password "$ATLAS_DB_PASSWORD" \
-  --skipSampleData \
-  --connectWith skip \
-  --force
-```
-
-Fetch the SRV connection string:
-
-```bash
-atlas clusters connectionStrings describe "$ATLAS_CLUSTER_NAME"
-```
-
-Replace `<username>` and `<password>`, append `/leetcode_solver?retryWrites=true&w=majority` if the URI does not already include a database name, then store it as `MONGODB_URI`.
-
-The deploy script can also run the Atlas CLI setup for you if `ATLAS_SETUP=true` is set:
-
-```bash
-ATLAS_SETUP=true
-ATLAS_CLUSTER_NAME=leetcode-solver
-ATLAS_PROVIDER=GCP
-ATLAS_REGION=CENTRAL_US
-ATLAS_TIER=M0
-ATLAS_DB_USERNAME=leetcode_solver
-ATLAS_DB_PASSWORD='replace-with-strong-password'
-# Optional if your Atlas CLI profile does not have a default project:
-# ATLAS_PROJECT_ID=...
-# Optional for a temporary public smoke test, depending on your Atlas policy:
-# ATLAS_ACCESS_LIST_IP=0.0.0.0/0
-```
-
-## Cloud Run Job deploy with URL-only execution arg
-
-Use `deploy_leetcode_job.sh` to deploy this project as a Cloud Run Job. The script loads `.env`, enables required Google APIs, creates Artifact Registry if missing, creates a runner service account, creates/updates Secret Manager secrets, builds the container image, and creates or updates the Cloud Run Job.
-
-Prepare auth and config:
-
-```bash
-python login.py lc-auth.json
-cp .env.example .env  # or create .env manually
-```
-
-Minimum `.env` for a real GCP test with MongoDB Atlas:
-
-```text
-PROJECT_ID=your-gcp-project-id
-REGION=us-central1
-JOB_NAME=leetcode-solver-job
-LC_AUTH_JSON_FILE=lc-auth.json
-LC_LANG=python3
-LC_LLM=true
-LC_HEADLESS=true
-LC_DRY_RUN=false
-GOOGLE_GENAI_USE_VERTEXAI=True
-GOOGLE_CLOUD_LOCATION=global
-LEETCODE_CODE_MODEL=gemini-2.5-flash
-LEETCODE_RATIONALE_MODEL=gemini-2.5-flash
-
-# MongoDB Atlas persistence:
-MONGODB_URI=mongodb+srv://leetcode_solver:...@.../leetcode_solver?retryWrites=true&w=majority
-MONGODB_DB=leetcode_solver
-MONGODB_COLLECTION=solution_packs
-
-# Optional tracing:
-OVERMIND_API_KEY=ovr_...
-OVERMIND_SERVICE_NAME=leetcode-solver
-OVERMIND_ENVIRONMENT=production
-
-# Optional artifact upload:
-OUTPUT_GCS_URI=gs://leetcode-solver-runs
-```
-
-Deploy:
-
-```bash
-chmod +x deploy_leetcode_job.sh
-./deploy_leetcode_job.sh
-```
-
-Local testing:
-
-```bash
-python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/'   --auth lc-auth.json   --lang python3   --llm   --dry-run
-```
-With LLM calling:
-
-```bash
-python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/'   --auth lc-auth.json   --lang python3   --llm
-```
-
-What the deploy script does with secrets:
-
-- `LC_AUTH_JSON_FILE` is uploaded to Secret Manager and mounted as `/secrets/lc-auth.json`.
-- `MONGODB_URI` or `MONGODB_URI_FILE` is uploaded to Secret Manager and injected as env var `MONGODB_URI`.
-- `OVERMIND_API_KEY` or `OVERMIND_API_KEY_FILE` is uploaded to Secret Manager and injected as env var `OVERMIND_API_KEY`.
-- The Cloud Run runner service account receives Secret Manager Secret Accessor on those secrets only.
-
-Execute the job. The only custom execution-time parameter is the LeetCode problem URL:
+The Cloud Run Job entrypoint is designed for URL-only execution:
 
 ```bash
 gcloud run jobs execute leetcode-solver-job \
-  --project your-gcp-project-id \
   --region us-central1 \
   --args 'https://leetcode.com/problems/two-sum/' \
   --wait
 ```
 
-Read logs:
+The job reads all fixed configuration from environment variables:
 
-```bash
-gcloud run jobs executions list --job leetcode-solver-job --region us-central1
+```text
+LC_AUTH_PATH
+LC_LANG
+LC_LLM
+LC_HEADLESS
+LC_DRY_RUN
+RUN_ROOT
+GOOGLE_CLOUD_PROJECT
+GOOGLE_CLOUD_LOCATION
+MONGODB_URI
+OUTPUT_GCS_URI
 ```
 
-After a successful run, query MongoDB from your local machine with the same `MONGODB_URI`:
+This makes production runs reproducible and easy to schedule at scale.
 
-```bash
-export MONGODB_URI='mongodb+srv://leetcode_solver:...@.../leetcode_solver?retryWrites=true&w=majority'
-python result_pack_store.py --ping
-python result_pack_store.py two-sum --limit 20
+---
+
+## Run Artifacts
+
+Each LLM run creates a structured folder:
+
+```text
+runs/<timestamp>_<problem-slug>/
+  input/
+    stable_problem_input.json
+    problem.txt
+    signature.txt
+  prompts/
+    01_generate_code_only.txt
+    02_rationale_and_reasoning_summary.txt
+  llm/
+    01_raw_code_response.txt
+    01_solution_sanitized.py
+    02_rationale.json
+  result/
+    leetcode-result.json
+    solution-pack.json
+  llm_debug.jsonl
+  run_summary.json
 ```
 
-How the URL-only job works:
+These artifacts make each solution auditable and reproducible.
 
-- `Dockerfile` should use `cloud_run_job.py` as the container entrypoint.
-- `cloud_run_job.py` reads fixed options from env vars such as `LC_LANG`, `LC_LLM`, `LC_AUTH_PATH`, `RUN_ROOT`, MongoDB, and Gemini/Vertex settings.
-- Cloud Run execution-time `--args` therefore only needs the URL; it does not need to repeat `leetcode_submitter.py`, auth paths, model flags, or headless flags.
-- If `OUTPUT_GCS_URI=gs://...` is set, the structured run folder is uploaded to GCS after execution.
+---
+
+## Roadmap
+
+### 1. Single-agent solving
+
+Generate, submit, record, and store solution attempts.
+
+### 2. Sequential optimization
+
+Run multiple attempts per problem and improve using real feedback.
+
+### 3. Agentic repair
+
+Use failed submissions to generate targeted fixes.
+
+### 4. Heuristic discovery
+
+Mine accepted solutions for reusable algorithmic patterns.
+
+### 5. Autonomous dataset builder
+
+Filter, rank, deduplicate, and export validated fine-tuning examples.
+
+### 6. Fine-tune and evaluate
+
+Train models on the generated dataset and evaluate on held-out problems.
+
+---
+
+## Disclaimer
+
+This project should only be used with accounts, platforms, and problem sources where automation is permitted.
+
+It does not bypass login, CAPTCHA, paywalls, premium restrictions, rate limits, or access controls.
+
+Keep secrets private:
+
+```text
+lc-auth.json
+.env
+Gemini keys
+MongoDB URI
+Overmind API key
+Cloud service account credentials
+```
+
+Before publishing datasets, verify that the underlying problem statements, solutions, and metadata can be used for that purpose.
+
+---
+
+## Vision
+
+AI-Salad is not just a LeetCode bot, and it is not just another prompt wrapper.
+
+It is a system for turning coding agents into their own data engine: generate, submit, observe, improve, remember, and train.
+
+The browser provides the environment.
+Submissions provide the gradient.
+Result packs provide the memory.
+Heuristics provide the strategy.
+Datasets provide the compounding effect.
+
+The destination is a self-improving loop for code intelligence.
