@@ -499,6 +499,7 @@ Train models on the generated dataset and evaluate on held-out problems.
 This project should only be used with accounts, platforms, and problem sources where automation is permitted.
 
 It does not bypass login, CAPTCHA, paywalls, premium restrictions, rate limits, or access controls.
+
 ---
 
 ## Vision
