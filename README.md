@@ -8,7 +8,7 @@
 </p>
 
 **AI-Salad** is a browser-native agent system for solving coding problems, improving solutions through sequential submissions, 
-extracting reusable solving heuristics, and automatically building high-quality fine-tuning datasets — without human labeling.
+extracting reusable solving heuristics, and automatically building HiFi fine-tuning datasets — without human labeling.
 
 The project starts with LeetCode-style problems, but the bigger goal is broader: 
 create a closed-loop environment where coding agents learn from real feedback, search toward optimal solutions, 
