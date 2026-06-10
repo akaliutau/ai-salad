@@ -517,9 +517,7 @@ Before publishing datasets, verify that the underlying problem statements, solut
 
 ## Vision
 
-AI-Salad is not just a LeetCode bot, and it is not just another prompt wrapper.
-
-It is a system for turning coding agents into their own data engine: generate, submit, observe, improve, remember, and train.
+AI-Salad is a system for turning coding agents into their own data engine: generate, submit, observe, improve, remember, and train.
 
 The browser provides the environment.
 Submissions provide the gradient.
@@ -527,4 +525,4 @@ Result packs provide the memory.
 Heuristics provide the strategy.
 Datasets provide the compounding effect.
 
-The destination is a self-improving loop for code intelligence.
+The destination is a self-improving loop eventually giving coding models the superhuman abilities in CS tasks 
