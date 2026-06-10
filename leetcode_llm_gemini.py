@@ -18,6 +18,7 @@ import dataclasses
 import hashlib
 import json
 import os
+from contextlib import nullcontext
 import re
 import time
 from dataclasses import dataclass
@@ -38,6 +39,17 @@ except Exception as exc:  # pragma: no cover
 else:
     GENAI_IMPORT_ERROR = ""
 
+try:
+    import overmind
+except Exception as exc:  # pragma: no cover
+    overmind = None  # type: ignore[assignment]
+    OVERMIND_IMPORT_ERROR = str(exc)
+else:
+    OVERMIND_IMPORT_ERROR = ""
+
+_OVERMIND_INITIALIZED = False
+_OVERMIND_INFO: dict[str, Any] = {"enabled": False}
+
 
 DEFAULT_CODE_MODEL = os.getenv("LEETCODE_CODE_MODEL", os.getenv("STAGE1_MODEL", "gemini-2.5-flash"))
 DEFAULT_RATIONALE_MODEL = os.getenv("LEETCODE_RATIONALE_MODEL", os.getenv("STAGE1_MODEL", DEFAULT_CODE_MODEL))
@@ -53,6 +65,7 @@ class GeminiSolutionResult:
     debug_jsonl_path: Path
     solution_code: str
     rationale: dict[str, Any]
+    overmind: dict[str, Any]
 
 
 def log(message: str) -> None:
@@ -124,6 +137,74 @@ def env_flag(name: str, default: bool = False) -> bool:
 def short_error(exc: BaseException, limit: int = 1600) -> str:
     text = f"{exc.__class__.__name__}: {exc}"
     return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def maybe_init_overmind(*, problem_id: str, run_dir: Path) -> dict[str, Any]:
+    """Initialize optional Overmind tracing before creating/calling Gemini."""
+    global _OVERMIND_INITIALIZED, _OVERMIND_INFO
+
+    enabled = env_flag("OVERMIND_ENABLED", bool(os.getenv("OVERMIND_API_KEY")))
+    service_name = os.getenv("OVERMIND_SERVICE_NAME", "leetcode-solver")
+    environment = os.getenv("OVERMIND_ENVIRONMENT") or os.getenv("ENVIRONMENT", "development")
+    info = {
+        "provider": "overmind",
+        "enabled": False,
+        "service_name": service_name,
+        "environment": environment,
+        "problem_id": problem_id,
+    }
+
+    if not enabled:
+        info["reason"] = "OVERMIND_API_KEY/OVERMIND_ENABLED not set"
+        _OVERMIND_INFO = info
+        return info
+    if overmind is None:
+        info["error"] = f"overmind is not installed: {OVERMIND_IMPORT_ERROR}"
+        _OVERMIND_INFO = info
+        return info
+
+    try:
+        if not _OVERMIND_INITIALIZED:
+            overmind.init(service_name=service_name, environment=environment, providers=["google"])
+            _OVERMIND_INITIALIZED = True
+        overmind.set_tag("leetcode.problem_id", problem_id)
+        overmind.set_tag("leetcode.run_dir", str(run_dir))
+        info["enabled"] = True
+        info["providers"] = ["google"]
+    except Exception as exc:
+        info["enabled"] = False
+        info["error"] = short_error(exc)
+
+    _OVERMIND_INFO = info
+    return info
+
+
+def overmind_span(name: str, attributes: dict[str, Any] | None = None) -> Any:
+    if overmind is None or not _OVERMIND_INITIALIZED:
+        return nullcontext(None)
+
+    try:
+        cm = overmind.get_tracer().start_as_current_span(name)
+    except Exception:
+        return nullcontext(None)
+
+    class _SpanContext:
+        def __enter__(self) -> Any:
+            self.span = cm.__enter__()
+            for key, value in (attributes or {}).items():
+                if value is not None:
+                    self.span.set_attribute(key, str(value))
+            return self.span
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
+            if exc is not None:
+                try:
+                    overmind.capture_exception(exc)
+                except Exception:
+                    pass
+            return cm.__exit__(exc_type, exc, tb)
+
+    return _SpanContext()
 
 
 def slugify(value: str | None) -> str:
@@ -350,7 +431,16 @@ def call_gemini_text(
         config: dict[str, Any] = {"temperature": temperature}
         if response_mime_type:
             config["response_mime_type"] = response_mime_type
-        response = client.models.generate_content(model=model, contents=[prompt], config=config)
+        with overmind_span(
+            op_name,
+            {
+                "llm.model": model,
+                "llm.temperature": temperature,
+                "llm.prompt_chars": len(prompt),
+                "llm.response_mime_type": response_mime_type,
+            },
+        ):
+            response = client.models.generate_content(model=model, contents=[prompt], config=config)
         text = extract_response_text(response)
         record.update(response_debug_summary(response, started=started))
         record.update({"status": "ok", "output_sha256_12": hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]})
@@ -445,6 +535,7 @@ def generate_solution_with_gemini(
     """Run the two-call Gemini pipeline and return sanitized code."""
     maybe_load_dotenv()
     stable_input = build_stable_problem_input(url=url, problem=problem, signature=signature, lang=lang)
+    problem_id = str(problem.get("titleSlug") or slugify(url.rsplit("/problems/", 1)[-1].strip("/")) or "problem")
     actual_run_dir = Path(run_dir) if run_dir else create_run_dir(run_root, str(problem.get("titleSlug") or problem.get("title") or "problem"))
     ensure_dir(actual_run_dir)
     ensure_dir(actual_run_dir / "input")
@@ -456,6 +547,8 @@ def generate_solution_with_gemini(
     dump_json(stable_input_path, stable_input)
     dump_text(actual_run_dir / "input" / "problem.txt", str(stable_input.get("problemText") or ""))
     dump_text(actual_run_dir / "input" / "signature.txt", str(stable_input.get("signature") or ""))
+
+    overmind_info = maybe_init_overmind(problem_id=problem_id, run_dir=actual_run_dir)
 
     log(f"run_dir={actual_run_dir}")
     log(
@@ -517,6 +610,7 @@ def generate_solution_with_gemini(
         "rationale": str(rationale_path),
         "debugJsonl": str(debug_jsonl),
         "inputHash": stable_input.get("inputHash"),
+        "overmind": overmind_info,
     }
     dump_json(actual_run_dir / "run_summary.json", summary)
     log("LLM pipeline complete")
@@ -529,4 +623,5 @@ def generate_solution_with_gemini(
         debug_jsonl_path=debug_jsonl,
         solution_code=solution_code,
         rationale=rationale,
+        overmind=overmind_info,
     )

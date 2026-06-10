@@ -64,6 +64,8 @@ def build_submitter_argv(problem_url: str) -> list[str]:
         argv.append("--dry-run")
     if env_flag("LC_LLM", True):
         argv.append("--llm")
+    if env_flag("LC_VERBOSE_RESULT", False):
+        argv.append("--verbose-result")
 
     # Optional explicit overrides. The submitter/LLM module also reads the same
     # model/project/location values from env, so these are only passed when set.

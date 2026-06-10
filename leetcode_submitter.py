@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from result_pack_store import (
+    build_solution_pack,
+    maybe_store_solution_pack,
+    problem_id_from_url,
+)
 from playwright.sync_api import Page, Response, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 DEFAULT_TIMEOUT_MS = 120_000
@@ -65,6 +70,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--run-dir", default=None, help="Use a specific run folder instead of auto-generating one.")
     parser.add_argument("--llm-project", default=None, help="Vertex AI project override. Defaults to GOOGLE_CLOUD_PROJECT or PROJECT_ID.")
     parser.add_argument("--llm-location", default=None, help="Vertex AI location override. Defaults to GOOGLE_CLOUD_LOCATION, VERTEX_LOCATION, or global.")
+    parser.add_argument("--verbose-result", action="store_true", help="Print the full result JSON instead of the compact result summary.")
     return parser.parse_args(argv)
 
 
@@ -425,6 +431,30 @@ def save_json(path: str | Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def compact_result_output(result: dict[str, Any], *, result_path: str | Path | None = None) -> dict[str, Any]:
+    pack = result.get("resultPack") if isinstance(result.get("resultPack"), dict) else {}
+    metrics = (pack.get("metrics") or {}) if isinstance(pack, dict) else {}
+    storage = result.get("storage") if isinstance(result.get("storage"), dict) else {}
+    return {
+        "problem_id": result.get("problemId"),
+        "status": metrics.get("status"),
+        "runtime": metrics.get("runtime"),
+        "memory": metrics.get("memory"),
+        "score": pack.get("score") if isinstance(pack, dict) else None,
+        "pack_id": pack.get("pack_id") if isinstance(pack, dict) else None,
+        "run_dir": result.get("runDir"),
+        "result_path": str(result_path) if result_path else None,
+        "mongo": {
+            "stored": bool(storage.get("enabled")),
+            "problem_id": storage.get("problem_id"),
+            "pack_id": storage.get("pack_id"),
+            "error": storage.get("error"),
+            "reason": storage.get("reason"),
+        },
+        "trace": result.get("trace"),
+    }
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if not looks_like_leetcode_problem_url(args.url):
         raise SubmitterError(f"Refusing non-LeetCode problem URL: {args.url}")
@@ -440,6 +470,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     result: dict[str, Any] = {
         "url": args.url,
+        "problemId": problem_id_from_url(args.url),
+        "language": args.lang or "python3",
         "scrapedAt": datetime.now(timezone.utc).isoformat(),
         "dryRun": args.dry_run,
         "problem": None,
@@ -448,7 +480,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "submission": None,
         "visibleMetrics": None,
         "llm": None,
+        "trace": None,
         "runDir": None,
+        "resultPack": None,
+        "storage": None,
     }
 
     context_options: dict[str, Any] = {"viewport": {"width": 1440, "height": 1000}}
@@ -505,7 +540,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "sanitizedSolution": str(llm_result.sanitized_solution_path),
                     "rationale": str(llm_result.rationale_path),
                     "debugJsonl": str(llm_result.debug_jsonl_path),
+                    "language": args.lang or "python3",
                 }
+                result["trace"] = llm_result.overmind
 
                 # Mirror browser-scraped artifacts under the structured run folder too.
                 run_input_dir = llm_result.run_dir / "input"
@@ -548,11 +585,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     }
                     result["visibleMetrics"] = scrape_visible_metrics(page)
 
+            result_pack = build_solution_pack(result, solution_code=solution_code)
+            result["resultPack"] = result_pack
+            result["storage"] = maybe_store_solution_pack(result_pack)
+
             save_json(args.out, result)
             if args.llm and result.get("runDir"):
                 run_dir = Path(str(result["runDir"]))
                 save_json(run_dir / "result" / "leetcode-result.json", result)
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+                save_json(run_dir / "result" / "solution-pack.json", result_pack)
+
+            if args.verbose_result:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(json.dumps(compact_result_output(result, result_path=args.out), indent=2, ensure_ascii=False))
             return result
         finally:
             context.close()

@@ -46,6 +46,8 @@ Outputs by default:
 - `signature.txt` — scraped editor stub/signature
 - `leetcode-result.json` — final JSON including status/runtime/memory
 
+The terminal now prints a compact summary by default (`problem_id`, status, runtime, memory, score, pack id, run folder, MongoDB status). The full JSON is still saved to `--out`; pass `--verbose-result` if you want the old full stdout dump.
+
 ## Scrape/inject without submitting
 
 ```bash
@@ -144,64 +146,163 @@ Useful flags:
 --llm-location global
 ```
 
-## Cloud Run packaging notes
+## Optional result packs, Overmind traces, and MongoDB
 
-The included `Dockerfile` installs Python dependencies plus Playwright Chromium dependencies. For Cloud Run Jobs, pass the same CLI args as the local command and provide auth state/secrets through Secret Manager, mounted files, or another controlled mechanism.
-
-Example build:
+Install the optional packages when you want tracing and MongoDB persistence:
 
 ```bash
-gcloud builds submit --tag gcr.io/$GOOGLE_CLOUD_PROJECT/lc-playwright-solver-py
+pip install overmind 'pymongo[srv]'
 ```
 
-Example job creation sketch:
+If you build a Cloud Run image from a Dockerfile that only installs `requirements.txt`, either add these two packages to `requirements.txt` or add this line to the Dockerfile after the main install step:
+
+```dockerfile
+RUN pip install --no-cache-dir -r requirements.additions.txt
+```
+
+Overmind tracing is optional and is initialized before Gemini calls when `OVERMIND_API_KEY` is present, or when `OVERMIND_ENABLED=true`. The SDK auto-instruments Google Gemini calls and this code adds a small custom span around each LLM operation with LeetCode tags.
 
 ```bash
-gcloud run jobs create lc-solver \
-  --image gcr.io/$GOOGLE_CLOUD_PROJECT/lc-playwright-solver-py \
-  --region us-central1 \
-  --set-env-vars GOOGLE_GENAI_USE_VERTEXAI=True,GOOGLE_CLOUD_PROJECT=$GOOGLE_CLOUD_PROJECT,GOOGLE_CLOUD_LOCATION=global,RUN_ROOT=/tmp/leetcode-runs \
-  --args="leetcode_submitter.py,https://leetcode.com/problems/two-sum/,--auth,/secrets/lc-auth.json,--lang,python3,--llm,--headless,--dry-run"
+export OVERMIND_API_KEY='ovr_...'
+export OVERMIND_SERVICE_NAME='leetcode-solver'
+export OVERMIND_ENVIRONMENT='production'
 ```
 
-`/tmp` is writable in Cloud Run but ephemeral. Persist run folders to GCS in a later step if you need long-term artifacts.
+MongoDB persistence is optional and is enabled only when `MONGODB_URI` is set. The Cloud Run deploy script stores the URI in Secret Manager and exposes it to the job as the `MONGODB_URI` environment variable.
+
+```bash
+export MONGODB_URI='mongodb+srv://...'
+export MONGODB_DB='leetcode_solver'
+export MONGODB_COLLECTION='solution_packs'
+```
+
+Each run writes a solution pack with:
+
+- `problem_id`: the suffix from the URL, for example `two-sum` from `/problems/two-sum/`
+- `problem`: title, IDs, source, and statement text
+- `solution`: language, code, path, and SHA-256
+- `metrics`: status, runtime, memory, test counts, pass rate
+- `score`: correctness-first score, then runtime and memory
+- `trace`: Overmind metadata when tracing is enabled
+
+Local connectivity check:
+
+```bash
+export MONGODB_URI='mongodb+srv://USER:PASSWORD@HOST/leetcode_solver?retryWrites=true&w=majority'
+python result_pack_store.py --ping
+```
+
+Query all packs for one problem, highest score first:
+
+```bash
+python result_pack_store.py two-sum --limit 20
+```
+
+The structured run folder also gets `result/solution-pack.json` when `--llm` is used.
+
+## MongoDB Atlas on GCP for real Cloud Run testing
+
+Recommended test setup: use MongoDB Atlas deployed on GCP, then inject the connection string into the Cloud Run Job from Google Secret Manager. This avoids hard-coding database credentials in the job definition.
+
+### Option A: create Atlas manually in the UI
+
+1. Create or open a MongoDB Atlas project.
+2. Create a free/shared cluster. Choose **Google Cloud** as the provider and choose a region close to your Cloud Run region.
+3. Create a database user, for example `leetcode_solver`, with a generated password.
+4. Configure Network Access.
+   - Fast smoke test: allow access from anywhere (`0.0.0.0/0`) temporarily.
+   - Safer setup: use a static Cloud Run egress IP through Serverless VPC Access + Cloud NAT, then allowlist only that NAT IP.
+   - Production setup: use Atlas private networking/private endpoint where available for your cluster tier and region.
+5. Copy the driver connection string and replace placeholders with the database user and password.
+6. Use database name `leetcode_solver` in the URI path.
+
+
+Example final URI shape:
+
+```text
+mongodb+srv://leetcode_solver:<password>@<cluster-host>/leetcode_solver?retryWrites=true&w=majority
+```
+
+Then place it in `.env` before running `deploy_leetcode_job.sh`:
+
+```bash
+MONGODB_URI='mongodb+srv://leetcode_solver:...@.../leetcode_solver?retryWrites=true&w=majority'
+MONGODB_DB=leetcode_solver
+MONGODB_COLLECTION=solution_packs
+```
+
+### Option B: create Atlas with the Atlas CLI
+
+Install and authenticate the MongoDB Atlas CLI first:
+
+```bash
+sudo apt-get install gnupg curl
+curl -fsSL https://pgp.mongodb.com/server-7.0.asc | \
+   sudo gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg \
+   --dearmor
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+sudo apt-get update
+sudo apt-get install -y mongodb-atlas
+
+atlas auth login
+atlas --version
+```
+
+A minimal free-tier GCP cluster can be created with `atlas setup`. This creates/configures the cluster and database user in one flow:
+
+```bash
+export ATLAS_CLUSTER_NAME=leetcode-solver
+export ATLAS_DB_USERNAME=leetcode_solver
+export ATLAS_DB_PASSWORD='replace-with-strong-password'
+
+atlas setup \
+  --clusterName "$ATLAS_CLUSTER_NAME" \
+  --provider GCP \
+  --region CENTRAL_US \
+  --tier M0 \
+  --username "$ATLAS_DB_USERNAME" \
+  --password "$ATLAS_DB_PASSWORD" \
+  --skipSampleData \
+  --connectWith skip \
+  --force
+```
+
+Fetch the SRV connection string:
+
+```bash
+atlas clusters connectionStrings describe "$ATLAS_CLUSTER_NAME"
+```
+
+Replace `<username>` and `<password>`, append `/leetcode_solver?retryWrites=true&w=majority` if the URI does not already include a database name, then store it as `MONGODB_URI`.
+
+The deploy script can also run the Atlas CLI setup for you if `ATLAS_SETUP=true` is set:
+
+```bash
+ATLAS_SETUP=true
+ATLAS_CLUSTER_NAME=leetcode-solver
+ATLAS_PROVIDER=GCP
+ATLAS_REGION=CENTRAL_US
+ATLAS_TIER=M0
+ATLAS_DB_USERNAME=leetcode_solver
+ATLAS_DB_PASSWORD='replace-with-strong-password'
+# Optional if your Atlas CLI profile does not have a default project:
+# ATLAS_PROJECT_ID=...
+# Optional for a temporary public smoke test, depending on your Atlas policy:
+# ATLAS_ACCESS_LIST_IP=0.0.0.0/0
+```
 
 ## Cloud Run Job deploy with URL-only execution arg
 
-Use `deploy_leetcode_job.sh` to deploy this project as a Cloud Run Job. It is adapted from the existing PoC deploy pattern: load `.env` safely, enable APIs, create Artifact Registry, create a runner service account, create/update Secret Manager secrets, build one image, and deploy a Cloud Run workload.
+Use `deploy_leetcode_job.sh` to deploy this project as a Cloud Run Job. The script loads `.env`, enables required Google APIs, creates Artifact Registry if missing, creates a runner service account, creates/updates Secret Manager secrets, builds the container image, and creates or updates the Cloud Run Job.
 
 Prepare auth and config:
 
 ```bash
 python login.py lc-auth.json
-cp .env.example .env
-# Edit PROJECT_ID, REGION, GOOGLE_CLOUD_LOCATION, models, bucket, etc.
+cp .env.example .env  # or create .env manually
 ```
 
-Deploy:
-
-```bash
-chmod +x deploy_leetcode_job.sh
-./deploy_leetcode_job.sh
-```
-
-Execute the job. The only custom execution-time parameter is the LeetCode problem URL:
-
-```bash
-gcloud run jobs execute leetcode-solver-job \
-  --region us-central1 \
-  --args 'https://leetcode.com/problems/two-sum/' \
-  --wait
-```
-
-How that works:
-
-- `Dockerfile` uses `cloud_run_job.py` as the container entrypoint.
-- `cloud_run_job.py` reads fixed options from env vars such as `LC_LANG`, `LC_LLM`, `LC_AUTH_PATH`, `RUN_ROOT`, and Gemini/Vertex settings.
-- Cloud Run execution-time `--args` therefore only needs the URL; it does not need to repeat `leetcode_submitter.py`, auth paths, model flags, or headless flags.
-- If `OUTPUT_GCS_URI=gs://...` is set, the structured run folder is uploaded to GCS after execution.
-
-Relevant `.env` values:
+Minimum `.env` for a real GCP test with MongoDB Atlas:
 
 ```text
 PROJECT_ID=your-gcp-project-id
@@ -213,9 +314,76 @@ LC_LLM=true
 LC_HEADLESS=true
 LC_DRY_RUN=false
 GOOGLE_GENAI_USE_VERTEXAI=True
-GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 GOOGLE_CLOUD_LOCATION=global
 LEETCODE_CODE_MODEL=gemini-2.5-flash
 LEETCODE_RATIONALE_MODEL=gemini-2.5-flash
+
+# MongoDB Atlas persistence:
+MONGODB_URI=mongodb+srv://leetcode_solver:...@.../leetcode_solver?retryWrites=true&w=majority
+MONGODB_DB=leetcode_solver
+MONGODB_COLLECTION=solution_packs
+
+# Optional tracing:
+OVERMIND_API_KEY=ovr_...
+OVERMIND_SERVICE_NAME=leetcode-solver
+OVERMIND_ENVIRONMENT=production
+
+# Optional artifact upload:
 OUTPUT_GCS_URI=gs://leetcode-solver-runs
 ```
+
+Deploy:
+
+```bash
+chmod +x deploy_leetcode_job.sh
+./deploy_leetcode_job.sh
+```
+
+Local testing:
+
+```bash
+python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/'   --auth lc-auth.json   --lang python3   --llm   --dry-run
+```
+With LLM calling:
+
+```bash
+python leetcode_submitter.py 'https://leetcode.com/problems/two-sum/'   --auth lc-auth.json   --lang python3   --llm
+```
+
+What the deploy script does with secrets:
+
+- `LC_AUTH_JSON_FILE` is uploaded to Secret Manager and mounted as `/secrets/lc-auth.json`.
+- `MONGODB_URI` or `MONGODB_URI_FILE` is uploaded to Secret Manager and injected as env var `MONGODB_URI`.
+- `OVERMIND_API_KEY` or `OVERMIND_API_KEY_FILE` is uploaded to Secret Manager and injected as env var `OVERMIND_API_KEY`.
+- The Cloud Run runner service account receives Secret Manager Secret Accessor on those secrets only.
+
+Execute the job. The only custom execution-time parameter is the LeetCode problem URL:
+
+```bash
+gcloud run jobs execute leetcode-solver-job \
+  --project your-gcp-project-id \
+  --region us-central1 \
+  --args 'https://leetcode.com/problems/two-sum/' \
+  --wait
+```
+
+Read logs:
+
+```bash
+gcloud run jobs executions list --job leetcode-solver-job --region us-central1
+```
+
+After a successful run, query MongoDB from your local machine with the same `MONGODB_URI`:
+
+```bash
+export MONGODB_URI='mongodb+srv://leetcode_solver:...@.../leetcode_solver?retryWrites=true&w=majority'
+python result_pack_store.py --ping
+python result_pack_store.py two-sum --limit 20
+```
+
+How the URL-only job works:
+
+- `Dockerfile` should use `cloud_run_job.py` as the container entrypoint.
+- `cloud_run_job.py` reads fixed options from env vars such as `LC_LANG`, `LC_LLM`, `LC_AUTH_PATH`, `RUN_ROOT`, MongoDB, and Gemini/Vertex settings.
+- Cloud Run execution-time `--args` therefore only needs the URL; it does not need to repeat `leetcode_submitter.py`, auth paths, model flags, or headless flags.
+- If `OUTPUT_GCS_URI=gs://...` is set, the structured run folder is uploaded to GCS after execution.
