@@ -1,0 +1,9 @@
+[project]
+name = "lc-playwright-solver-prototype"
+version = "0.1.0"
+description = "Prototype LeetCode scraper/submitter using Playwright for Python"
+requires-python = ">=3.10"
+dependencies = ["playwright>=1.51.0"]
+
+[project.scripts]
+lc-submit = "leetcode_submitter:main"

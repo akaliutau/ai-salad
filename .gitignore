@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.idea
+notes.txt
+initial_*.txt
+lc-auth.json
+*.txt
+*-result.json
