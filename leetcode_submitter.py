@@ -44,7 +44,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         description="Submit an already-saved solution to a LeetCode problem via Playwright."
     )
     parser.add_argument("url", help="LeetCode problem URL, e.g. https://leetcode.com/problems/two-sum/")
-    parser.add_argument("--solution", default="sol.txt", help="Path to solution code file. Default: sol.txt")
+    parser.add_argument("--solution", default="sol.txt", help="Path to solution code file. Default: sol.txt. Optional when --llm is used.")
     parser.add_argument("--auth", default="lc-auth.json", help="Playwright storage state JSON. Default: lc-auth.json")
     parser.add_argument("--out", default="leetcode-result.json", help="Result JSON output path.")
     parser.add_argument("--problem-out", default="problem.txt", help="Scraped problem statement output path.")
@@ -54,6 +54,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true", help="Run Chromium headless. Keep false while developing.")
     parser.add_argument("--dry-run", action="store_true", help="Scrape and inject code, but do not click Submit.")
     parser.add_argument("--slow-mo", type=int, default=0, help="Playwright slow_mo in milliseconds.")
+
+    # Optional Gemini add-on. The implementation lives in leetcode_llm_gemini.py.
+    parser.add_argument("--llm", action="store_true", help="Generate solution code with Gemini from the scraped problem before injecting/submitting.")
+    parser.add_argument("--llm-model", default=None, help="Gemini model for code generation. Default: LEETCODE_CODE_MODEL, STAGE1_MODEL, or gemini-2.5-flash.")
+    parser.add_argument("--llm-rationale-model", default=None, help="Gemini model for rationale/debug explanation. Default: LEETCODE_RATIONALE_MODEL, STAGE1_MODEL, or code model.")
+    parser.add_argument("--llm-temperature", type=float, default=0.2, help="Gemini temperature for code generation.")
+    parser.add_argument("--llm-rationale-temperature", type=float, default=0.2, help="Gemini temperature for rationale/debug explanation.")
+    parser.add_argument("--run-root", default="runs", help="Root folder for auto-generated structured run folders when --llm is used.")
+    parser.add_argument("--run-dir", default=None, help="Use a specific run folder instead of auto-generating one.")
+    parser.add_argument("--llm-project", default=None, help="Vertex AI project override. Defaults to GOOGLE_CLOUD_PROJECT or PROJECT_ID.")
+    parser.add_argument("--llm-location", default=None, help="Vertex AI location override. Defaults to GOOGLE_CLOUD_LOCATION, VERTEX_LOCATION, or global.")
     return parser.parse_args(argv)
 
 
@@ -403,11 +414,15 @@ def scrape_visible_metrics(page: Page) -> dict[str, str | None]:
 
 
 def save_text(path: str | Path, text: str) -> None:
-    Path(path).write_text(text, encoding="utf-8")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def save_json(path: str | Path, data: dict[str, Any]) -> None:
-    Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -415,11 +430,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise SubmitterError(f"Refusing non-LeetCode problem URL: {args.url}")
 
     solution_path = Path(args.solution)
-    if not solution_path.exists():
-        raise SubmitterError(f"Solution file not found: {solution_path}")
-    solution_code = solution_path.read_text(encoding="utf-8")
-    if not solution_code.strip():
-        raise SubmitterError(f"Solution file is empty: {solution_path}")
+    solution_code = ""
+    if not args.llm:
+        if not solution_path.exists():
+            raise SubmitterError(f"Solution file not found: {solution_path}")
+        solution_code = solution_path.read_text(encoding="utf-8")
+        if not solution_code.strip():
+            raise SubmitterError(f"Solution file is empty: {solution_path}")
 
     result: dict[str, Any] = {
         "url": args.url,
@@ -430,6 +447,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "editorSet": None,
         "submission": None,
         "visibleMetrics": None,
+        "llm": None,
+        "runDir": None,
     }
 
     context_options: dict[str, Any] = {"viewport": {"width": 1440, "height": 1000}}
@@ -460,6 +479,38 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
             save_text(args.problem_out, f"{problem.get('title') or ''}\n\n{problem.get('text') or ''}\n")
             save_text(args.signature_out, signature.get("selected") or "")
+
+            if args.llm:
+                from leetcode_llm_gemini import generate_solution_with_gemini
+
+                llm_result = generate_solution_with_gemini(
+                    problem=problem,
+                    signature=signature,
+                    url=args.url,
+                    lang=args.lang or "python3",
+                    run_root=args.run_root,
+                    run_dir=args.run_dir,
+                    model=args.llm_model,
+                    rationale_model=args.llm_rationale_model,
+                    project=args.llm_project,
+                    location=args.llm_location,
+                    temperature=args.llm_temperature,
+                    rationale_temperature=args.llm_rationale_temperature,
+                )
+                solution_code = llm_result.solution_code
+                result["runDir"] = str(llm_result.run_dir)
+                result["llm"] = {
+                    "runDir": str(llm_result.run_dir),
+                    "stableInput": str(llm_result.stable_input_path),
+                    "sanitizedSolution": str(llm_result.sanitized_solution_path),
+                    "rationale": str(llm_result.rationale_path),
+                    "debugJsonl": str(llm_result.debug_jsonl_path),
+                }
+
+                # Mirror browser-scraped artifacts under the structured run folder too.
+                run_input_dir = llm_result.run_dir / "input"
+                save_text(run_input_dir / "problem_from_browser.txt", f"{problem.get('title') or ''}\n\n{problem.get('text') or ''}\n")
+                save_text(run_input_dir / "signature_from_browser.txt", signature.get("selected") or "")
 
             result["editorSet"] = set_editor_code(page, solution_code)
 
@@ -498,6 +549,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     result["visibleMetrics"] = scrape_visible_metrics(page)
 
             save_json(args.out, result)
+            if args.llm and result.get("runDir"):
+                run_dir = Path(str(result["runDir"]))
+                save_json(run_dir / "result" / "leetcode-result.json", result)
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return result
         finally:

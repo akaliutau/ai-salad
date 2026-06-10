@@ -1,0 +1,7 @@
+.venv
+__pycache__
+*.pyc
+lc-auth.json
+sol.txt
+runs
+*.zip
