@@ -499,20 +499,6 @@ Train models on the generated dataset and evaluate on held-out problems.
 This project should only be used with accounts, platforms, and problem sources where automation is permitted.
 
 It does not bypass login, CAPTCHA, paywalls, premium restrictions, rate limits, or access controls.
-
-Keep secrets private:
-
-```text
-lc-auth.json
-.env
-Gemini keys
-MongoDB URI
-Overmind API key
-Cloud service account credentials
-```
-
-Before publishing datasets, verify that the underlying problem statements, solutions, and metadata can be used for that purpose.
-
 ---
 
 ## Vision
